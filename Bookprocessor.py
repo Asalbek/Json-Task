@@ -10,7 +10,7 @@ from structure_extractor import StructureExtractor
 
 logging.basicConfig(level=logging.INFO)
 
-PDF_PATH = "book.pdf"  # Replace with the path to the PDF book
+PDF_PATH = "book.pdf"  # replace with the path to the PDF book
 
 
 class BookProcessor:
@@ -18,7 +18,11 @@ class BookProcessor:
     Processes a PDF book by extracting text and organizing content based on the provided structure.
     """
 
-    def __init__(self, pdf_path: str, start_page: int = 13):
+    def __init__(
+            self,
+            pdf_path: str,
+            start_page: int = 13
+    ):
         self.pdf_path = pdf_path
         self.structure_extractor = StructureExtractor(pdf_path)
         self.structure = self.structure_extractor.extract_structure()
@@ -28,90 +32,136 @@ class BookProcessor:
 
     @staticmethod
     def _prepare_regex(title: str) -> str:
-        """Prepare a regex pattern from the title."""
+        """
+        Escapes special characters and replaces spaces with '\\s*' for regex usage.
+        """
         return re.escape(title).replace('\\ ', '\\s*')
 
-    def _set_section_text(self, level_info: Dict[str, str], section_text: str):
-        """Set text and length for the given level in the structure."""
+    def _set_section_text(self, prev_level: dict, section_text: str):
+        """
+        Sets the text and length for the previous level in the structure.
+        """
         length = len(section_text.strip())
-        level = level_info['level']
-        chapter = level_info.get('chapter')
-        section = level_info.get('section')
-        subsection = level_info.get('subsection')
 
-        if level == 'subsection':
+        if prev_level['level'] == 'subsection':
+            chapter = prev_level['chapter']
+            section = prev_level['section']
+            subsection = prev_level['subsection']
             self.structure[chapter]['sections'][section]['subsections'][subsection]['text'] = section_text
             self.structure[chapter]['sections'][section]['subsections'][subsection]['length'] = length
-        elif level == 'section':
+        elif prev_level['level'] == 'section':
+            chapter = prev_level['chapter']
+            section = prev_level['section']
             self.structure[chapter]['sections'][section]['text'] = section_text
             self.structure[chapter]['sections'][section]['length'] = length
-        elif level == 'chapter':
+        elif prev_level['level'] == 'chapter':
+            chapter = prev_level['chapter']
             self.structure[chapter]['text'] = section_text
             self.structure[chapter]['length'] = length
 
     def _extract_text(self):
-        """Extract text from the PDF starting from the specified page."""
+        """
+        Extracts text from the PDF starting from the specified page.
+        """
+        text_list = []
         with fitz.open(self.pdf_path) as doc:
-            self.text = '\n'.join(page.get_text("text") for page in doc[self.start_page - 1:])
+            for page_num in range(self.start_page - 1, len(doc)):
+                page = doc.load_page(page_num)
+                page_text = page.get_text("text")
+                if page_text:
+                    text_list.append(page_text)
+        self.text = '\n'.join(text_list)
         logging.info("Text extraction complete.")
 
     def _match_structure(self):
-        """Match the extracted text to the provided structure."""
+        """
+        Matches the text to the provided structure and sets the text for chapters, sections, and subsections.
+        """
         prev_match_end = 0
         prev_level = {'level': 'start'}
 
         for chapter_num, chapter_dict in self.structure.items():
-            chapter_regex = rf"(?i)Глава\s*{chapter_num}\s*{self._prepare_regex(chapter_dict.get('title', ''))}"
-            if match := re.search(chapter_regex, self.text):
-                self._process_match(prev_level, match, prev_match_end)
-                prev_match_end = match.end()
+            # Regex for chapter
+            chapter_title_regex = self._prepare_regex(chapter_dict.get('title', ''))
+            chapter_regex = rf"(?i)Глава\s*{chapter_num}\s*{chapter_title_regex}"
+            match = re.search(chapter_regex, self.text)
+            if match:
+                chapter_start = match.start()
+                chapter_end = match.end()
+                # Process previous level
+                section_text = self.text[prev_match_end:chapter_start]
+                if section_text.strip():
+                    self._set_section_text(prev_level, section_text)
+                prev_match_end = chapter_end
                 prev_level = {'level': 'chapter', 'chapter': chapter_num}
-
-                for section_num, section_dict in chapter_dict.get('sections', {}).items():
-                    section_regex = rf"(?i){section_num}\s*{self._prepare_regex(section_dict.get('title', ''))}"
-                    if match := re.search(section_regex, self.text):
-                        self._process_match(prev_level, match, prev_match_end)
-                        prev_match_end = match.end()
-                        prev_level = {'level': 'section', 'chapter': chapter_num, 'section': section_num}
-
-                        for subsection_num, subsection_dict in section_dict.get('subsections', {}).items():
-                            subsection_regex = rf"(?i){subsection_num}\s*{self._prepare_regex(subsection_dict.get('title', ''))}"
-                            if match := re.search(subsection_regex, self.text):
-                                self._process_match(prev_level, match, prev_match_end)
-                                prev_match_end = match.end()
-                                prev_level = {
-                                    'level': 'subsection',
-                                    'chapter': chapter_num,
-                                    'section': section_num,
-                                    'subsection': subsection_num
-                                }
-                            else:
-                                logging.warning(f"No match found for subsection: {subsection_num}")
-
             else:
                 logging.warning(f"No match found for chapter: {chapter_num}")
+                continue
 
-        # Process any remaining text
+            sections = chapter_dict.get('sections', {})
+            for section_num, section_dict in sections.items():
+                # Regex for section
+                section_title_regex = self._prepare_regex(section_dict.get('title', ''))
+                section_regex = rf"(?i){section_num}\s*{section_title_regex}"
+                match = re.search(section_regex, self.text)
+                if match:
+                    section_start = match.start()
+                    section_end = match.end()
+                    # Process previous level
+                    section_text = self.text[prev_match_end:section_start]
+                    if section_text.strip():
+                        self._set_section_text(prev_level, section_text)
+                    prev_match_end = section_end
+                    prev_level = {
+                        'level': 'section',
+                        'chapter': chapter_num,
+                        'section': section_num
+                    }
+                else:
+                    logging.warning(f"No match found for section: {section_num}")
+                    continue
+
+                subsections = section_dict.get('subsections', {})
+                for subsection_num, subsection_dict in subsections.items():
+                    # Regex for subsection
+                    subsection_title_regex = self._prepare_regex(subsection_dict.get('title', ''))
+                    subsection_regex = rf"(?i){subsection_num}\s*{subsection_title_regex}"
+                    match = re.search(subsection_regex, self.text)
+                    if match:
+                        subsection_start = match.start()
+                        subsection_end = match.end()
+                        # Process previous level
+                        section_text = self.text[prev_match_end:subsection_start]
+                        if section_text.strip():
+                            self._set_section_text(prev_level, section_text)
+                        prev_match_end = subsection_end
+                        prev_level = {
+                            'level': 'subsection',
+                            'chapter': chapter_num,
+                            'section': section_num,
+                            'subsection': subsection_num
+                        }
+                    else:
+                        logging.warning(f"No match found for subsection: {subsection_num}")
+                        continue
+
+        # Process the last section
         if prev_match_end < len(self.text):
-            self._set_section_text(prev_level, self.text[prev_match_end:])
+            section_text = self.text[prev_match_end:]
+            self._set_section_text(prev_level, section_text)
 
         logging.info("Structure matching complete.")
 
-    def _process_match(self, prev_level: Dict[str, str], match, prev_match_end: int):
-        """Process matched text based on the previous level."""
-        section_text = self.text[prev_match_end: match.start()]
-        if section_text.strip():
-            self._set_section_text(prev_level, section_text)
-
-    def process_book(self) -> Dict[str, Any]:
-        """Main method to process the book."""
+    def process_book(self) -> dict:
+        """
+        Main method to process the book.
+        """
         self._extract_text()
         self._match_structure()
         return self.structure
 
 
 def save_json(data: Dict[str, Any], output_path: str) -> None:
-    """Save data to a JSON file."""
     with open(output_path, 'w', encoding='utf-8') as json_file:
         json.dump(data, json_file, ensure_ascii=False, indent=4)  # noqa
 
